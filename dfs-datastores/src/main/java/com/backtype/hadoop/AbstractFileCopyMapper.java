@@ -2,36 +2,38 @@ package com.backtype.hadoop;
 
 import com.backtype.hadoop.FileCopyInputFormat.FileCopyArgs;
 import com.backtype.support.Utils;
+
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.*;
+import org.apache.hadoop.mapreduce.Mapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.UUID;
 
-public abstract class AbstractFileCopyMapper extends MapReduceBase implements Mapper<Text, Text, NullWritable, NullWritable> {
+public abstract class AbstractFileCopyMapper extends Mapper<Text, Text, NullWritable, NullWritable> {
     public static Logger LOG = LoggerFactory.getLogger(AbstractFileCopyMapper.class);
 
     private FileSystem fsSource;
     private FileSystem fsDest;
     private String tmpRoot;
 
-    private void setStatus(Reporter rprtr, String msg) {
+    private void setStatus(Context context, String msg) {
         LOG.info(msg);
-        rprtr.setStatus(msg);
+        context.setStatus(msg);
     }
 
-    public void map(Text source, Text target, OutputCollector<NullWritable, NullWritable> oc, Reporter rprtr) throws IOException {
+    public void map(Text source, Text target, Context context) throws IOException {
         Path sourceFile = new Path(source.toString());
         Path finalFile = new Path(target.toString());
         Path tmpFile = new Path(tmpRoot, UUID.randomUUID().toString());
 
-        setStatus(rprtr, "Copying " + sourceFile.toString() + " to " + tmpFile.toString());
+        setStatus(context, "Copying " + sourceFile.toString() + " to " + tmpFile.toString());
 
         if(fsDest.exists(finalFile)) {
             FileChecksum fc1 = fsSource.getFileChecksum(sourceFile);
@@ -47,28 +49,25 @@ public abstract class AbstractFileCopyMapper extends MapReduceBase implements Ma
 
         fsDest.mkdirs(tmpFile.getParent());
 
-        copyFile(fsSource, sourceFile, fsDest, tmpFile, rprtr);
+        copyFile(fsSource, sourceFile, fsDest, tmpFile, context);
 
-        setStatus(rprtr, "Renaming " + tmpFile.toString() + " to " + finalFile.toString());
+        setStatus(context, "Renaming " + tmpFile.toString() + " to " + finalFile.toString());
 
         fsDest.mkdirs(finalFile.getParent());
         if(!fsDest.rename(tmpFile, finalFile))
             throw new IOException("could not rename " + tmpFile.toString() + " to " + finalFile.toString());
-
-        // this is a bit of a hack; if we don't do this explicit rename, the owner of the file will
-        // be hadoop each time.
-        //fsDest.setOwner(finalFile, this.owner, fs.getGroup());
     }
 
-    protected abstract void copyFile(FileSystem fsSource, Path source, FileSystem fsDest, Path target, Reporter reporter) throws IOException;
+    protected abstract void copyFile(FileSystem fsSource, Path source, FileSystem fsDest, Path target, Context context) throws IOException;
 
     @Override
-    public void configure(JobConf job) {
-        FileCopyArgs args = (FileCopyArgs) Utils.getObject(job, FileCopyInputFormat.ARGS);
+    public void setup(Context context) {
+    	Configuration conf = context.getConfiguration();
+    	FileCopyArgs args = (FileCopyArgs) Utils.getObject(conf, FileCopyInputFormat.ARGS);
         try {
-            tmpRoot = job.get("hadoop.tmp.dir") != null ? job.get("hadoop.tmp.dir") + Path.SEPARATOR + "filecopy" : args.tmpRoot;
-            fsSource = new Path(args.source).getFileSystem(job);
-            fsDest = new Path(args.dest).getFileSystem(job);
+            tmpRoot = conf.get("hadoop.tmp.dir") != null ? conf.get("hadoop.tmp.dir") + Path.SEPARATOR + "filecopy" : args.tmpRoot;
+            fsSource = new Path(args.source).getFileSystem(conf);
+            fsDest = new Path(args.dest).getFileSystem(conf);
 
         } catch (IOException e) {
             throw new RuntimeException(e);

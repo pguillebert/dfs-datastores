@@ -6,11 +6,23 @@ import com.backtype.hadoop.formats.RecordStreamFactory;
 import com.backtype.support.SubsetSum;
 import com.backtype.support.SubsetSum.Value;
 import com.backtype.support.Utils;
+
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.*;
-import org.apache.hadoop.mapred.*;
-import org.apache.hadoop.mapred.lib.NullOutputFormat;
+import org.apache.hadoop.io.ArrayWritable;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableUtils;
+import org.apache.hadoop.mapreduce.InputFormat;
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.lib.output.NullOutputFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,15 +30,18 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.*;
-
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
 
 public class Consolidator {
     public static final long DEFAULT_CONSOLIDATION_SIZE = 1024*1024*127; //127 MB
     private static final String ARGS = "consolidator_args";
 
     private static Thread shutdownHook;
-    private static RunningJob job = null;
+    private static Job job = null;
 
     public static class ConsolidatorArgs implements Serializable {
         public String fsUri;
@@ -83,31 +98,24 @@ public class Consolidator {
 
     public static void consolidate(FileSystem fs, RecordStreamFactory streams, PathLister lister, List<String> dirs,
         long targetSizeBytes, String extension) throws IOException {
-        JobConf conf = new JobConf(fs.getConf(), Consolidator.class);
+        Job job = Job.getInstance();
         String fsUri = fs.getUri().toString();
         ConsolidatorArgs args = new ConsolidatorArgs(fsUri, streams, lister, dirs, targetSizeBytes, extension);
-        Utils.setObject(conf, ARGS, args);
-
-        conf.setJobName("Consolidator: " + getDirsString(dirs));
-
-        conf.setInputFormat(ConsolidatorInputFormat.class);
-        conf.setOutputFormat(NullOutputFormat.class);
-        conf.setMapperClass(ConsolidatorMapper.class);
-
-        conf.setSpeculativeExecution(false);
-
-        conf.setNumReduceTasks(0);
-
-        conf.setOutputKeyClass(NullWritable.class);
-        conf.setOutputValueClass(NullWritable.class);
+        Utils.setObject(job, ARGS, args);
+        job.setJarByClass(Consolidator.class);
+        job.setJobName("Consolidator: " + getDirsString(dirs));
+        job.setInputFormatClass(ConsolidatorInputFormat.class);
+        job.setOutputFormatClass(NullOutputFormat.class);
+        job.setMapperClass(ConsolidatorMapper.class);
+        job.setSpeculativeExecution(false);
+        job.setNumReduceTasks(0);
+        job.setOutputKeyClass(NullWritable.class);
+        job.setOutputValueClass(NullWritable.class);
 
         try {
             registerShutdownHook();
-            job = new JobClient(conf).submitJob(conf);
-
-            while(!job.isComplete()) {
-                Thread.sleep(100);
-            }
+            job.submit();
+            job.waitForCompletion(true);
             if(!job.isSuccessful()) throw new IOException("Consolidator failed");
             deregisterShutdownHook();
         } catch(IOException e) {
@@ -116,7 +124,9 @@ public class Consolidator {
             ret.initCause(e);
             throw ret;
         } catch(InterruptedException e) {
-            throw new RuntimeException(e);
+        	throw new RuntimeException(e);
+        } catch(ClassNotFoundException e) {
+        	throw new RuntimeException(e);
         }
     }
 
@@ -142,13 +152,13 @@ public class Consolidator {
         Runtime.getRuntime().removeShutdownHook( shutdownHook );
     }
 
-    public static class ConsolidatorMapper extends MapReduceBase implements Mapper<ArrayWritable, Text, NullWritable, NullWritable> {
+    public static class ConsolidatorMapper extends Mapper<ArrayWritable, Text, NullWritable, NullWritable> {
         public static Logger LOG = LoggerFactory.getLogger(ConsolidatorMapper.class);
 
         FileSystem fs;
         ConsolidatorArgs args;
 
-        public void map(ArrayWritable sourcesArr, Text target, OutputCollector<NullWritable, NullWritable> oc, Reporter rprtr) throws IOException {
+        public void map(ArrayWritable sourcesArr, Text target, Context context) throws IOException {
 
             Path finalFile = new Path(target.toString());
 
@@ -164,7 +174,7 @@ public class Consolidator {
 
                 String status = "Consolidating " + sources.size() + " files into " + tmpFile.toString();
                 LOG.info(status);
-                rprtr.setStatus(status);
+                context.setStatus(status);
 
                 RecordStreamFactory fact = args.streams;
                 fs.mkdirs(finalFile.getParent());
@@ -178,13 +188,13 @@ public class Consolidator {
                         os.writeRaw(record);
                     }
                     is.close();
-                    rprtr.progress();
+                    context.progress();
                 }
                 os.close();
 
                 status = "Renaming " + tmpFile.toString() + " to " + finalFile.toString();
                 LOG.info(status);
-                rprtr.setStatus(status);
+                context.setStatus(status);
 
                 if(!fs.rename(tmpFile, finalFile))
                     throw new IOException("could not rename " + tmpFile.toString() + " to " + finalFile.toString());
@@ -192,17 +202,18 @@ public class Consolidator {
 
             String status = "Deleting " + sources.size() + " original files";
             LOG.info(status);
-            rprtr.setStatus(status);
+            context.setStatus(status);
 
             for(Path p: sources) {
                 fs.delete(p, false);
-                rprtr.progress();
+                context.progress();
             }
 
         }
 
         @Override
-        public void configure(JobConf conf) {
+        public void setup(Context context) {
+        	Configuration conf = context.getConfiguration();
             args = (ConsolidatorArgs) Utils.getObject(conf, ARGS);
             try {
                 fs = Utils.getFS(args.fsUri, conf);
@@ -212,24 +223,21 @@ public class Consolidator {
         }
     }
 
-    public static class ConsolidatorSplit implements InputSplit {
+    public static class ConsolidatorSplit extends InputSplit {
         public String[] sources;
         public String target;
-
-        public ConsolidatorSplit() {
-
-        }
 
         public ConsolidatorSplit(String[] sources, String target) {
             this.sources = sources;
             this.target = target;
         }
 
-
+        @Override
         public long getLength() throws IOException {
             return 1;
         }
 
+        @Override
         public String[] getLocations() throws IOException {
             return new String[] {};
         }
@@ -246,15 +254,21 @@ public class Consolidator {
 
     }
 
-    public static class ConsolidatorRecordReader implements RecordReader<ArrayWritable, Text> {
+    public static class ConsolidatorRecordReader extends RecordReader<ArrayWritable, Text> {
         private ConsolidatorSplit split;
-        boolean finished = false;
-
-        public ConsolidatorRecordReader(ConsolidatorSplit split) {
-            this.split = split;
+        private boolean finished = false;
+        private ArrayWritable k;
+        private Text v;
+        
+        @Override
+        public void initialize(InputSplit split, TaskAttemptContext ta) {
+            this.split = (ConsolidatorSplit) split;
+            this.k = new ArrayWritable(Text.class);
+            this.v = new Text();
         }
 
-        public boolean next(ArrayWritable k, Text v) throws IOException {
+        @Override
+        public boolean nextKeyValue() throws IOException {
             if(finished) return false;
             Writable[] sources = new Writable[split.sources.length];
             for(int i=0; i<sources.length; i++) {
@@ -267,22 +281,29 @@ public class Consolidator {
             return true;
         }
 
-        public ArrayWritable createKey() {
-            return new ArrayWritable(Text.class);
+        @Override
+        public ArrayWritable getCurrentKey() {
+            return k;
         }
 
-        public Text createValue() {
-            return new Text();
+        @Override
+        public Text getCurrentValue() {
+            return v;
         }
 
+        /*
+        @Override
         public long getPos() throws IOException {
             if(finished) return 1;
             else return 0;
         }
+         */
 
+        @Override
         public void close() throws IOException {
         }
 
+        @Override
         public float getProgress() throws IOException {
             if(finished) return 1;
             else return 0;
@@ -291,7 +312,7 @@ public class Consolidator {
     }
 
 
-    public static class ConsolidatorInputFormat implements InputFormat<ArrayWritable, Text> {
+    public static class ConsolidatorInputFormat extends InputFormat<ArrayWritable, Text> {
 
         private static class PathSizePair implements Value {
             public Path path;
@@ -349,7 +370,9 @@ public class Consolidator {
             return ret;
         }
 
-        public InputSplit[] getSplits(JobConf conf, int ignored) throws IOException {
+        @Override
+        public List<InputSplit> getSplits(JobContext context) throws IOException {
+        	Configuration conf = context.getConfiguration();
             ConsolidatorArgs args = (ConsolidatorArgs) Utils.getObject(conf, ARGS);
             PathLister lister = args.pathLister;
             List<String> dirs = args.dirs;
@@ -359,11 +382,14 @@ public class Consolidator {
                 ret.addAll(createSplits(fs, lister.getFiles(fs,dir),
                     dir, args.targetSizeBytes, args.extension));
             }
-            return ret.toArray(new InputSplit[ret.size()]);
+            return ret;
         }
 
-        public RecordReader<ArrayWritable, Text> getRecordReader(InputSplit is, JobConf jc, Reporter rprtr) throws IOException {
-            return new ConsolidatorRecordReader((ConsolidatorSplit) is);
+        @Override
+        public RecordReader<ArrayWritable, Text> createRecordReader(InputSplit is, TaskAttemptContext task) throws IOException {
+            ConsolidatorRecordReader rr = new ConsolidatorRecordReader();
+            rr.initialize(is, task);
+            return rr;
         }
     }
 }

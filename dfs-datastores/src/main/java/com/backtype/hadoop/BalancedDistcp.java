@@ -8,17 +8,14 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.NullWritable;
-import org.apache.hadoop.mapred.JobClient;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapred.Reporter;
-import org.apache.hadoop.mapred.RunningJob;
-import org.apache.hadoop.mapred.lib.NullOutputFormat;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.output.NullOutputFormat;
 
 import java.io.IOException;
 
 public class BalancedDistcp {
     private static Thread shutdownHook;
-    private static RunningJob job = null;
+    private static Job job = null;
 
     public static void distcp(String qualifiedSource, String qualifiedDest, int renameMode, PathLister lister) throws IOException {
         distcp(qualifiedSource, qualifiedDest, renameMode, lister, "");
@@ -42,31 +39,25 @@ public class BalancedDistcp {
         if(!Utils.hasScheme(args.source) || !Utils.hasScheme(args.dest))
             throw new IllegalArgumentException("source and dest must have schemes " + args.source + " " + args.dest);
 
-        JobConf conf = new JobConf(configuration, BalancedDistcp.class);
-        Utils.setObject(conf, FileCopyInputFormat.ARGS, args);
+        Job job = Job.getInstance(configuration);
+        job.setJobName("BalancedDistcp: " + args.source + " -> " + args.dest);
+        job.setJarByClass(BalancedDistcp.class);
 
-        conf.setJobName("BalancedDistcp: " + args.source + " -> " + args.dest);
+        Utils.setObject(job, FileCopyInputFormat.ARGS, args);
 
-        conf.setInputFormat(FileCopyInputFormat.class);
-        conf.setOutputFormat(NullOutputFormat.class);
-        conf.setMapperClass(BalancedDistcpMapper.class);
-
-        conf.setSpeculativeExecution(false);
-
-        conf.setNumReduceTasks(0);
-
-        conf.setOutputKeyClass(NullWritable.class);
-        conf.setOutputValueClass(NullWritable.class);
+        job.setInputFormatClass(FileCopyInputFormat.class);
+        job.setOutputFormatClass(NullOutputFormat.class);
+        job.setMapperClass(BalancedDistcpMapper.class);
+        job.setSpeculativeExecution(false);
+        job.setNumReduceTasks(0);
+        job.setOutputKeyClass(NullWritable.class);
+        job.setOutputValueClass(NullWritable.class);
 
         try {
             registerShutdownHook();
-            job = new JobClient(conf).submitJob(conf);
-
-            while(!job.isComplete()) {
-                Thread.sleep(100);
-            }
-
-            if(!job.isSuccessful()) throw new IOException("BalancedDistcp failed");
+            job.submit();
+            job.waitForCompletion(true);
+             if(!job.isSuccessful()) throw new IOException("BalancedDistcp failed");
             deregisterShutdownHook();
         } catch(IOException e) {
             IOException ret = new IOException("BalancedDistcp failed");
@@ -74,6 +65,8 @@ public class BalancedDistcp {
             throw ret;
         } catch(InterruptedException e) {
             throw new RuntimeException(e);
+        } catch(ClassNotFoundException e) {
+        	throw new RuntimeException(e);
         }
     }
 
@@ -81,7 +74,7 @@ public class BalancedDistcp {
         byte[] buffer = new byte[128*1024]; //128 K
 
         @Override
-        protected void copyFile(FileSystem fsSource, Path source, FileSystem fsDest, Path target, Reporter reporter) throws IOException {
+        protected void copyFile(FileSystem fsSource, Path source, FileSystem fsDest, Path target, Context context) throws IOException {
             FSDataInputStream fin = fsSource.open(source);
             FSDataOutputStream fout = fsDest.create(target);
 
@@ -89,7 +82,7 @@ public class BalancedDistcp {
                 int amt;
                 while((amt = fin.read(buffer)) >= 0) {
                     fout.write(buffer, 0, amt);
-                    reporter.progress();
+                    context.progress();
                 }
             } finally {
                 fin.close();

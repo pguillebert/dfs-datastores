@@ -8,7 +8,11 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableUtils;
-import org.apache.hadoop.mapred.*;
+import org.apache.hadoop.mapreduce.InputFormat;
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -18,7 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-public class FileCopyInputFormat implements InputFormat<Text, Text> {
+public class FileCopyInputFormat extends InputFormat<Text, Text> {
     public static final String ARGS = "file_copy_args";
     public static final String WORK_PER_WORKER = "file_copy_work";
     public static final long DEFAULT_WORK_PER_WORKER = 256*1024*1024;
@@ -59,21 +63,19 @@ public class FileCopyInputFormat implements InputFormat<Text, Text> {
         }
     }
 
-    public static class FileCopySplit implements InputSplit {
-
+    public static class FileCopySplit extends InputSplit {
         public List<FileCopy> copies;
-
-        public FileCopySplit() {
-        }
 
         public FileCopySplit(List<FileCopy> copies) {
             this.copies = copies;
         }
 
+        @Override
         public long getLength() throws IOException {
             return copies.size();
         }
 
+        @Override
         public String[] getLocations() throws IOException {
             return new String[]{};
         }
@@ -97,16 +99,21 @@ public class FileCopyInputFormat implements InputFormat<Text, Text> {
         }
     }
 
-    public static class FileCopyRecordReader implements RecordReader<Text, Text> {
-
+    public static class FileCopyRecordReader extends RecordReader<Text, Text> {
         private FileCopySplit split;
-        int pos = 0;
+        private int pos = 0;
+        private Text k;
+        private Text v;
 
-        public FileCopyRecordReader(FileCopySplit split) {
-            this.split = split;
+        @Override
+        public void initialize(InputSplit split, TaskAttemptContext ta) {
+            this.split = (FileCopySplit) split;
+            this.k = new Text();
+            this.v = new Text();
         }
 
-        public boolean next(Text k, Text v) throws IOException {
+        @Override
+        public boolean nextKeyValue() throws IOException {
             if (pos >= split.copies.size()) {
                 return false;
             }
@@ -117,21 +124,21 @@ public class FileCopyInputFormat implements InputFormat<Text, Text> {
             return true;
         }
 
-        public Text createKey() {
-            return new Text();
+        @Override	
+        public Text getCurrentKey() {
+            return k;
         }
-
-        public Text createValue() {
-            return new Text();
+        
+        @Override
+        public Text getCurrentValue() {
+            return v;
         }
-
-        public long getPos() throws IOException {
-            return pos;
-        }
-
+        
+        @Override
         public void close() throws IOException {
         }
 
+        @Override
         public float getProgress() throws IOException {
             return (float) (1.0 * pos / split.copies.size());
         }
@@ -159,7 +166,8 @@ public class FileCopyInputFormat implements InputFormat<Text, Text> {
         return ret;
     }
 
-    public InputSplit[] getSplits(JobConf conf, int mappers) throws IOException {
+    public List<InputSplit> getSplits(JobContext context) throws IOException {
+    	Configuration conf = context.getConfiguration();
         FileCopyArgs args = (FileCopyArgs) Utils.getObject(conf, ARGS);
 
         FileSystem fsSource = new Path(args.source).getFileSystem(new Configuration());
@@ -204,15 +212,18 @@ public class FileCopyInputFormat implements InputFormat<Text, Text> {
         } else {
             splits = SubsetSum.split(all, workPerWorker);
         }
-        InputSplit[] ret = new InputSplit[splits.size()];
+        List<InputSplit> ret = new ArrayList<InputSplit>();
+        
         for(int i = 0; i < splits.size(); i++) {
-            ret[i] = new FileCopySplit(getFileCopies(splits.get(i)));
+            ret.add( new FileCopySplit(getFileCopies(splits.get(i))));
         }
-
         return ret;
     }
 
-    public RecordReader<Text, Text> getRecordReader(InputSplit is, JobConf jc, Reporter rprtr) throws IOException {
-        return new FileCopyRecordReader((FileCopySplit) is);
+	@Override
+    public RecordReader<Text, Text> createRecordReader(InputSplit is, TaskAttemptContext task) throws IOException {
+		FileCopyRecordReader rr = new FileCopyRecordReader();
+		rr.initialize(is, task);
+		return rr;
     }
 }

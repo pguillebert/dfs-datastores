@@ -9,11 +9,8 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.NullWritable;
-import org.apache.hadoop.mapred.JobClient;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapred.Reporter;
-import org.apache.hadoop.mapred.RunningJob;
-import org.apache.hadoop.mapred.lib.NullOutputFormat;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.output.NullOutputFormat;
 
 import java.io.IOException;
 
@@ -23,7 +20,7 @@ public class Coercer {
     private static final String FACTOUT_ARG = "coercer_stream_factout_arg";
 
     private static Thread shutdownHook;
-    private static RunningJob job = null;
+    private static Job job = null;
 
     public static void coerce(String source, String dest, int renameMode, PathLister lister, RecordStreamFactory factin, RecordStreamFactory factout) throws IOException {
         coerce(source, dest, renameMode, lister, factin, factout, "");
@@ -40,31 +37,26 @@ public class Coercer {
 
 
         FileCopyArgs args = new FileCopyArgs(qualSource, qualDest, renameMode, lister, extensionOnRename);
-        JobConf conf = new JobConf(configuration, Coercer.class);
-        Utils.setObject(conf, FileCopyInputFormat.ARGS, args);
-        Utils.setObject(conf, FACTIN_ARG, factin);
-        Utils.setObject(conf, FACTOUT_ARG, factout);
+        Job job = Job.getInstance(configuration);
+        job.setJobName("Coercer: " + qualSource + " -> " + qualDest);
+        job.setJarByClass(Coercer.class);
+        Utils.setObject(job, FileCopyInputFormat.ARGS, args);
+        Utils.setObject(job, FACTIN_ARG, factin);
+        Utils.setObject(job, FACTOUT_ARG, factout);
 
-        conf.setJobName("Coercer: " + qualSource + " -> " + qualDest);
-
-        conf.setInputFormat(FileCopyInputFormat.class);
-        conf.setOutputFormat(NullOutputFormat.class);
-        conf.setMapperClass(CoercerMapper.class);
-
-        conf.setSpeculativeExecution(false);
-
-        conf.setNumReduceTasks(0);
-
-        conf.setOutputKeyClass(NullWritable.class);
-        conf.setOutputValueClass(NullWritable.class);
+        job.setInputFormatClass(FileCopyInputFormat.class);
+        job.setOutputFormatClass(NullOutputFormat.class);
+        job.setMapperClass(CoercerMapper.class);
+        job.setSpeculativeExecution(false);
+        job.setNumReduceTasks(0);
+        job.setOutputKeyClass(NullWritable.class);
+        job.setOutputValueClass(NullWritable.class);
 
         try {
             registerShutdownHook();
-            job = new JobClient(conf).submitJob(conf);
-            while(!job.isComplete()) {
-                Thread.sleep(100);
-            }
-
+            job.submit();
+            job.waitForCompletion(true);
+            
             if(!job.isSuccessful()) throw new IOException("Coercer failed");
             deregisterShutdownHook();
         } catch(IOException e) {
@@ -73,6 +65,8 @@ public class Coercer {
             throw ret;
         } catch(InterruptedException e) {
             throw new RuntimeException(e);
+        } catch(ClassNotFoundException e) {
+        	throw new RuntimeException(e);
         }
     }
 
@@ -104,7 +98,7 @@ public class Coercer {
         RecordStreamFactory factout;
 
         @Override
-        protected void copyFile(FileSystem fsSource, Path source, FileSystem fsDest, Path target, Reporter reporter) throws IOException {
+        protected void copyFile(FileSystem fsSource, Path source, FileSystem fsDest, Path target, Context context) throws IOException {
             RecordInputStream fin = factin.getInputStream(fsSource, source);
             RecordOutputStream fout = factout.getOutputStream(fsDest, target);
 
@@ -116,7 +110,7 @@ public class Coercer {
                     bytes+=record.length;
                     if(bytes >= 1000000) { //every 1 MB of data report progress so we don't time out on large files
                         bytes = 0;
-                        reporter.progress();
+                        context.progress();
                     }
                 }
             } finally {
@@ -127,10 +121,11 @@ public class Coercer {
         }
 
         @Override
-        public void configure(JobConf job) {
-            super.configure(job);
-            factin = (RecordStreamFactory) Utils.getObject(job, FACTIN_ARG);
-            factout = (RecordStreamFactory) Utils.getObject(job, FACTOUT_ARG);
+        public void setup(Context context) {
+        	Configuration configuration = context.getConfiguration();
+        	super.setup(context);
+            factin = (RecordStreamFactory) Utils.getObject(configuration, FACTIN_ARG);
+            factout = (RecordStreamFactory) Utils.getObject(configuration, FACTOUT_ARG);
         }
     }
 }
