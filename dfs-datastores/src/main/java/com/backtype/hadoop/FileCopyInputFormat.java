@@ -7,6 +7,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.mapreduce.InputFormat;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -63,11 +64,15 @@ public class FileCopyInputFormat extends InputFormat<Text, Text> {
         }
     }
 
-    public static class FileCopySplit extends InputSplit {
-        public List<FileCopy> copies;
+    public static class FileCopySplit extends InputSplit implements Writable {
+        private List<FileCopy> copies;
 
         public FileCopySplit(List<FileCopy> copies) {
             this.copies = copies;
+        }
+
+        public FileCopySplit() {
+
         }
 
         @Override
@@ -166,6 +171,7 @@ public class FileCopyInputFormat extends InputFormat<Text, Text> {
         return ret;
     }
 
+    @Override
     public List<InputSplit> getSplits(JobContext context) throws IOException {
     	Configuration conf = context.getConfiguration();
         FileCopyArgs args = (FileCopyArgs) Utils.getObject(conf, ARGS);

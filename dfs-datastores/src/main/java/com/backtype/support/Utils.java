@@ -5,7 +5,7 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BytesWritable;
-import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.util.StringUtils;
 
 import java.io.*;
@@ -73,7 +73,7 @@ public class Utils {
     public static void setObject(Configuration conf, String key, Object o) {
         conf.set(key, StringUtils.byteToHexString(serialize(o)));
     }
-    public static void setObject(Job job, String key, Object o) {
+    public static void setObject(JobContext job, String key, Object o) {
     	setObject(job.getConfiguration(), key, o);
     }
     
@@ -84,8 +84,8 @@ public class Utils {
         return deserialize(val);
     }
     
-    public static void getObject(Job job, String key) {
-    	getObject(job.getConfiguration(), key);
+    public static Object getObject(JobContext job, String key) {
+        return getObject(job.getConfiguration(), key);
     }
 
     public static byte[] serialize(Object obj) {

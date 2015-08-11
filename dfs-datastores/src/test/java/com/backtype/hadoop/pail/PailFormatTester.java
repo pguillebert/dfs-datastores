@@ -11,12 +11,16 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.FileInputFormat;
-import org.apache.hadoop.mapred.InputFormat;
-import org.apache.hadoop.mapred.InputSplit;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapred.RecordReader;
-import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapreduce.InputFormat;
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
+
 import static com.backtype.support.TestUtils.*;
 
 
@@ -62,16 +66,22 @@ public abstract class PailFormatTester extends TestCase {
         Multimap<String, String> results = HashMultimap.create();
 
 
-        InputFormat informat = format.getInputFormatClass().newInstance();
-        JobConf conf = new JobConf();
-        FileInputFormat.addInputPath(conf, new Path(path));
-        InputSplit[] splits = informat.getSplits(conf, 10000);
-        assertTrue(splits.length > 3); //want to test that splitting is working b/c i made really big files
+        InputFormat<Text, BytesWritable> informat = format.getInputFormatClass().newInstance();
+        Job job = Job.getInstance();
+        FileInputFormat.setMaxInputSplitSize(job, 1000);
+        FileInputFormat.setMinInputSplitSize(job, 1000);
+        TaskAttemptContext tac = new TaskAttemptContextImpl(job.getConfiguration(), new TaskAttemptID());
+        FileInputFormat.addInputPath(job, new Path(path));
+        List<InputSplit> splits = informat.getSplits(job);
+        System.out.println("number of splits: "+ splits.size());
+        assertTrue(splits.size() > 3); //want to test that splitting is working b/c i made really big files
         for(InputSplit split: splits) {
-            RecordReader<Text, BytesWritable> rr = informat.getRecordReader(split, conf, Reporter.NULL);
+            RecordReader<Text, BytesWritable> rr = informat.createRecordReader(split, tac);
             Text t = new Text();
             BytesWritable b = new BytesWritable();
-            while(rr.next(t, b)) {
+            while(rr.nextKeyValue()) {
+                t = rr.getCurrentKey();
+                b = rr.getCurrentValue();
                 results.put(t.toString(), new String(Utils.getBytes(b)));
             }
             rr.close();

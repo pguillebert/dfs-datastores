@@ -35,7 +35,7 @@
                              [junit/junit "4.12"]]
               :plugins [[lein-junit "1.1.8"]]}
              :provided
-             {:dependencies [[org.apache.hadoop/hadoop-client "2.5.1"]]}}
+             {:dependencies [[org.apache.hadoop/hadoop-client "2.7.1"]]}}
   :classifiers {:javadoc {:java-source-paths ^:replace []
                           :source-paths ^:replace []
                           :resource-paths ^:replace []}

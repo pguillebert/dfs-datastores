@@ -54,9 +54,7 @@ public class Coercer {
 
         try {
             registerShutdownHook();
-            job.submit();
             job.waitForCompletion(true);
-            
             if(!job.isSuccessful()) throw new IOException("Coercer failed");
             deregisterShutdownHook();
         } catch(IOException e) {

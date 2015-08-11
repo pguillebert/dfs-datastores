@@ -55,7 +55,6 @@ public class BalancedDistcp {
 
         try {
             registerShutdownHook();
-            job.submit();
             job.waitForCompletion(true);
              if(!job.isSuccessful()) throw new IOException("BalancedDistcp failed");
             deregisterShutdownHook();

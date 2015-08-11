@@ -3,9 +3,9 @@ package com.backtype.hadoop.pail;
 import com.backtype.support.Utils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
-import org.apache.hadoop.mapred.FileSplit;
-import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapreduce.lib.input.FileSplit;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -13,7 +13,7 @@ import java.io.IOException;
 import java.util.LinkedList;
 import java.util.List;
 
-public class PailInputSplit extends FileSplit {
+public class PailInputSplit extends FileSplit implements Writable {
 
     private String[] _hosts;
     private PailSpec _spec;
@@ -23,7 +23,7 @@ public class PailInputSplit extends FileSplit {
         super(null, 0, 0, (String[]) null);
     }
 
-    public PailInputSplit(FileSystem fs, String root, PailSpec spec, JobConf job, FileSplit split) throws IOException {
+    public PailInputSplit(FileSystem fs, String root, PailSpec spec, FileSplit split) throws IOException {
         super(split.getPath(), split.getStart(), split.getLength(), (String[])null);
         _spec = spec;
         _hosts = split.getLocations();
@@ -32,8 +32,8 @@ public class PailInputSplit extends FileSplit {
 
     private void setRelPath(FileSystem fs, String root) {
         Path filePath = super.getPath();
-        filePath = filePath.makeQualified(fs);
-        Path rootPath = new Path(root).makeQualified(fs);
+        filePath = fs.makeQualified(filePath);
+        Path rootPath = fs.makeQualified(new Path(root));
 
         List<String> dirs = new LinkedList<String>();
         Path curr = filePath.getParent();

@@ -6,6 +6,7 @@ import com.backtype.hadoop.formats.SequenceFileInputStream;
 import com.backtype.hadoop.formats.SequenceFileOutputStream;
 import com.backtype.support.KeywordArgParser;
 import com.backtype.support.Utils;
+
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -17,7 +18,15 @@ import org.apache.hadoop.io.compress.BZip2Codec;
 import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.DefaultCodec;
 import org.apache.hadoop.io.compress.GzipCodec;
-import org.apache.hadoop.mapred.*;
+import org.apache.hadoop.mapreduce.InputFormat;
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.FileSplit;
+import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.SequenceFileRecordReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,42 +91,44 @@ public class SequenceFileFormat implements PailFormat {
     }
 
 
-    public static class SequenceFilePailRecordReader implements RecordReader<Text, BytesWritable> {
+    public static class SequenceFilePailRecordReader extends RecordReader<Text, BytesWritable> {
         private static Logger LOG = LoggerFactory.getLogger(SequenceFilePailRecordReader.class);
         public static final int NUM_TRIES = 10;
 
-        JobConf conf;
         PailInputSplit split;
+        TaskAttemptContext context;
+        Text k;
+        BytesWritable v;
         int recordsRead;
-        Reporter reporter;
-
         SequenceFileRecordReader<BytesWritable, NullWritable> delegate;
 
-
-        public SequenceFilePailRecordReader(JobConf conf, PailInputSplit split, Reporter reporter) throws IOException {
-           this.split = split;
-           this.conf = conf;
+        @Override
+        public void initialize(InputSplit split, TaskAttemptContext context) throws IOException, InterruptedException {
+           this.split = (PailInputSplit) split;
+           this.context = context;
+           this.k = new Text();
+           this.v = new BytesWritable();
            this.recordsRead = 0;
-           this.reporter = reporter;
-           LOG.info("Processing pail file " + split.getPath().toString());
+           LOG.info("Processing pail file " + this.split.getPath().toString());
            resetDelegate();
         }
 
-        private void resetDelegate() throws IOException {
-           this.delegate = new SequenceFileRecordReader<BytesWritable, NullWritable>(conf, split);
-           BytesWritable dummyValue = new BytesWritable();
+        private void resetDelegate() throws IOException, InterruptedException {
+           this.delegate = new SequenceFileRecordReader<BytesWritable, NullWritable>();
+           this.delegate.initialize(split, context);
            for(int i=0; i<recordsRead; i++) {
-               delegate.next(dummyValue, NullWritable.get());
+               delegate.nextKeyValue();
            }
         }
 
         private void progress() {
-            if(reporter!=null) {
-                reporter.progress();
+            if(context!=null) {
+                context.progress();
             }
         }
 
-        public boolean next(Text k, BytesWritable v) throws IOException {
+        @Override
+        public boolean nextKeyValue() throws IOException, InterruptedException {
             /**
              * There's 2 bugs that happen here, both resulting in indistinguishable EOFExceptions.
              *
@@ -130,10 +141,12 @@ public class SequenceFileFormat implements PailFormat {
              */
             for(int i=0; i<NUM_TRIES; i++) {
                 try {
-                    boolean ret = delegate.next(v, NullWritable.get());
-                    k.set(split.getPailRelPath());
-                    recordsRead++;
-                    return ret;
+                    if(delegate.nextKeyValue()) {
+                        k.set(split.getPailRelPath());
+                        v.set(delegate.getCurrentKey());
+                        recordsRead++;
+                        return true;
+                    } else return false;
                 } catch(EOFException e) {
                     progress();
                     Utils.sleep(10000); //in case it takes time for S3 to recover
@@ -148,22 +161,22 @@ public class SequenceFileFormat implements PailFormat {
             return false;
         }
 
-        public Text createKey() {
-            return new Text();
+        @Override
+        public Text getCurrentKey() {
+            return k;
         }
 
-        public BytesWritable createValue() {
-            return new BytesWritable();
+        @Override
+        public BytesWritable getCurrentValue() {
+            return v;
         }
 
-        public long getPos() throws IOException {
-            return delegate.getPos();
-        }
-
+        @Override
         public void close() throws IOException {
             delegate.close();
         }
 
+        @Override
         public float getProgress() throws IOException {
             return delegate.getProgress();
         }
@@ -173,35 +186,42 @@ public class SequenceFileFormat implements PailFormat {
     public static class SequenceFilePailInputFormat extends SequenceFileInputFormat<Text, BytesWritable> {
         private Pail _currPail;
 
-
         @Override
-        public InputSplit[] getSplits(JobConf job, int numSplits) throws IOException {
+        public List<InputSplit> getSplits(JobContext job) throws IOException {
             List<InputSplit> ret = new ArrayList<InputSplit>();
             Path[] roots = FileInputFormat.getInputPaths(job);
             for(int i=0; i < roots.length; i++) {
                 _currPail = new Pail(roots[i].toString());
-                InputSplit[] splits = super.getSplits(job, numSplits);
+                List<InputSplit> splits = super.getSplits(job);
                 for(InputSplit split: splits) {
-                    ret.add(new PailInputSplit(_currPail.getFileSystem(), _currPail.getInstanceRoot(), _currPail.getSpec(), job, (FileSplit) split));
+                    ret.add(new PailInputSplit(_currPail.getFileSystem(), _currPail.getInstanceRoot(),
+                                               _currPail.getSpec(), (FileSplit) split));
                 }
-            }
-            return ret.toArray(new InputSplit[ret.size()]);
-        }
-
-        @Override
-        protected FileStatus[] listStatus(JobConf job) throws IOException {
-            List<Path> paths = PailFormatFactory.getPailPaths(_currPail, job);
-            FileSystem fs = _currPail.getFileSystem();
-            FileStatus[] ret = new FileStatus[paths.size()];
-            for(int i=0; i<paths.size(); i++) {
-                ret[i] = fs.getFileStatus(paths.get(i).makeQualified(fs));
             }
             return ret;
         }
 
         @Override
-        public RecordReader<Text, BytesWritable> getRecordReader(InputSplit split, JobConf job, Reporter reporter) throws IOException {
-            return new SequenceFilePailRecordReader(job, (PailInputSplit) split, reporter);
+        protected List<FileStatus> listStatus(JobContext job) throws IOException {
+            List<Path> paths = PailFormatFactory.getPailPaths(_currPail, job);
+            FileSystem fs = _currPail.getFileSystem();
+            List<FileStatus> ret = new ArrayList<FileStatus>();
+            for(Path path : paths) {
+                ret.add(fs.getFileStatus(fs.makeQualified(path)));
+            }
+            return ret;
+        }
+
+        @Override
+        public RecordReader<Text, BytesWritable> createRecordReader(InputSplit split, TaskAttemptContext task)
+            throws IOException {
+            SequenceFilePailRecordReader rr = new SequenceFilePailRecordReader();
+            try {
+                rr.initialize(split, task);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+		    }
+            return rr;
         }
     }
 }

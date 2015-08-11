@@ -2,12 +2,15 @@ package com.backtype.hadoop.pail;
 
 import com.backtype.hadoop.formats.RecordOutputStream;
 import com.backtype.support.Utils;
+
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.*;
-import org.apache.hadoop.util.Progressable;
+import org.apache.hadoop.mapreduce.RecordWriter;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,7 +29,7 @@ public class  PailOutputFormat extends FileOutputFormat<Text, BytesWritable> {
     /**
      * Change this to just use Pail#writeObject - automatically fix up BytesWritable
      */
-    public static class PailRecordWriter implements RecordWriter<Text, BytesWritable> {
+    public static class PailRecordWriter extends RecordWriter<Text, BytesWritable> {
         private Pail _pail;
         private String _unique;
 
@@ -47,19 +50,23 @@ public class  PailOutputFormat extends FileOutputFormat<Text, BytesWritable> {
         private int writtenRecords = 0;
         private int numFilesOpened = 0;
 
-        public PailRecordWriter(JobConf conf, String unique, Progressable p) throws IOException {
+        public PailRecordWriter(TaskAttemptContext tac) throws IOException {
+            Configuration conf = tac.getConfiguration();
+            String unique = getUniqueFile(tac, "test", "tst");
             PailSpec spec = (PailSpec) Utils.getObject(conf, SPEC_ARG);
 
-            Path path = getOutputPath(conf);
+            Path path = getOutputPath(tac);
             FileSystem fs = path.getFileSystem(conf);
 
             Pail.create(fs, path.toString(), spec,  false);
             // this is a hack to get the work output directory since it's not exposed directly. instead it only
             // provides a path to a particular file.
-            _pail = Pail.create(fs, FileOutputFormat.getTaskOutputPath(conf, unique).getParent().toString(), spec, false);
-            _unique = unique;
+            //_pail = Pail.create(fs, FileOutputFormat.getTaskOutputPath(conf, unique).getParent().toString(), spec, false);
+            _pail = Pail.create(fs, new Path(unique).getParent().toString(), spec, false);
+             _unique = unique;
         }
 
+        @Override
         public void write(Text k, BytesWritable v) throws IOException {
             String attr = k.toString();
             OpenAttributeFile oaf = _outputters.get(attr);
@@ -102,27 +109,18 @@ public class  PailOutputFormat extends FileOutputFormat<Text, BytesWritable> {
             LOG.info("Closed " + oaf.filename + " for attr " + oaf.attr);
         }
 
-        public void close(Reporter rprtr) throws IOException {
+        @Override
+        public void close(TaskAttemptContext tac) throws IOException {
             for(String key: _outputters.keySet()) {
                 closeAttributeFile(_outputters.get(key));
-                rprtr.progress();
+                tac.progress();
             }
             _outputters.clear();
         }
     }
 
-    public RecordWriter<Text, BytesWritable> getRecordWriter(FileSystem ignored, JobConf jc, String string, Progressable p) throws IOException {
-        return new PailRecordWriter(jc, string, p);
-    }
-
     @Override
-    public void checkOutputSpecs(FileSystem fs, JobConf conf) throws IOException {
-        // because this outputs multiple files, doesn't work with speculative execution on something like EMR with S3
-        if(!(conf.getOutputCommitter() instanceof FileOutputCommitter)) {
-            if(conf.getMapSpeculativeExecution() && conf.getNumReduceTasks()==0 || conf.getReduceSpeculativeExecution()) {
-                throw new IllegalArgumentException("Cannot use speculative execution with PailOutputFormat unless FileOutputCommitter is enabled");
-            }
-        }
+    public RecordWriter<Text, BytesWritable> getRecordWriter(TaskAttemptContext tac) throws IOException {
+        return new PailRecordWriter(tac);
     }
-
 }

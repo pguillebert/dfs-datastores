@@ -114,12 +114,10 @@ public class Consolidator {
 
         try {
             registerShutdownHook();
-            job.submit();
             job.waitForCompletion(true);
             if(!job.isSuccessful()) throw new IOException("Consolidator failed");
             deregisterShutdownHook();
         } catch(IOException e) {
-
             IOException ret = new IOException("Consolidator failed");
             ret.initCause(e);
             throw ret;
@@ -223,13 +221,17 @@ public class Consolidator {
         }
     }
 
-    public static class ConsolidatorSplit extends InputSplit {
-        public String[] sources;
-        public String target;
+    public static class ConsolidatorSplit extends InputSplit implements Writable {
+        private String[] sources;
+        private String target;
 
         public ConsolidatorSplit(String[] sources, String target) {
             this.sources = sources;
             this.target = target;
+        }
+
+        public ConsolidatorSplit() {
+
         }
 
         @Override
@@ -291,14 +293,6 @@ public class Consolidator {
             return v;
         }
 
-        /*
-        @Override
-        public long getPos() throws IOException {
-            if(finished) return 1;
-            else return 0;
-        }
-         */
-
         @Override
         public void close() throws IOException {
         }
@@ -308,9 +302,7 @@ public class Consolidator {
             if(finished) return 1;
             else return 0;
         }
-
     }
-
 
     public static class ConsolidatorInputFormat extends InputFormat<ArrayWritable, Text> {
 
