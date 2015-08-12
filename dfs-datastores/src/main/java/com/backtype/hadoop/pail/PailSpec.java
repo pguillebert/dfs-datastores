@@ -6,8 +6,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
-import org.jvyaml.YAML;
-
+import org.yaml.snakeyaml.Yaml;
 import java.io.*;
 import java.util.HashMap;
 import java.util.Map;
@@ -17,7 +16,7 @@ public class PailSpec implements Writable, Serializable {
     private String name;
     private Map<String, Object> args;
     private PailStructure structure;
-
+    private static Yaml YAML = new Yaml();
     private static final PailStructure DEFAULT_STRUCTURE = new DefaultPailStructure();
 
     public PailSpec() {
@@ -38,7 +37,7 @@ public class PailSpec implements Writable, Serializable {
 
     public PailSpec(String name, Map<String, Object> args, PailStructure structure) {
         this.name = name;
-        this.args = args == null ? null : new HashMap(args);
+        this.args = args == null ? null : new HashMap<String, Object>(args);
         this.structure = structure;
     }
 

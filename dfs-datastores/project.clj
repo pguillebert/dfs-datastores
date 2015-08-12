@@ -7,7 +7,7 @@
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.slf4j/slf4j-api "1.7.12"]
-                 [jvyaml/jvyaml "1.0.0"]
+                 [org.yaml/snakeyaml "1.15"]
                  [com.google.guava/guava "18.0"]]
   :deploy-repositories {"releases" {:url "https://oss.sonatype.org/service/local/staging/deploy/maven2"
                                     :creds :gpg}
